@@ -520,12 +520,22 @@ async function poll() {
 
 setInterval(() => { poll().catch((e) => log('poll error: ' + e.message)); }, POLL_SECONDS * 1000);
 poll().catch((e) => log('poll error: ' + e.message));
+// Probe gh once at boot even before any repo is watched, so the pane's
+// first-run card can say up front whether GitHub access exists.
+if (!PAT) ensureGh().catch(() => {});
 
 // ── HTTP: pane UI + state ────────────────────────────────────────────────────
 function stateJson() {
   return JSON.stringify({
     pollSeconds: POLL_SECONDS,
     explicit: EXPLICIT.length > 0,
+    // Auth summary for the pane's first-run guidance:
+    //   github: 'pat' | 'gh' | 'none' (null = gh probe still running)
+    //   ado:    'pat' | 'none'
+    auth: {
+      github: PAT ? 'pat' : ghReady === null ? null : ghReady ? 'gh' : 'none',
+      ado: ADO_PAT ? 'pat' : 'none',
+    },
     repos: Array.from(state.repos.values()),
   });
 }

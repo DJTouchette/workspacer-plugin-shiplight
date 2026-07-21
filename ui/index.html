@@ -323,12 +323,31 @@
       + '</a>';
   }
 
+  // First-run guidance: say exactly what's missing (auth, repos) instead of a
+  // generic empty state, so setup never requires reading the README.
+  function authLine(auth) {
+    if (!auth || auth.github === 'pat' || auth.github === 'gh') {
+      const how = auth && auth.github === 'pat' ? 'a GitHub token' : 'the gh CLI';
+      return '<p style="margin-top:10px">✓ GitHub access via ' + how + '.'
+        + (auth && auth.ado === 'pat' ? ' ✓ Azure DevOps token set.' : '') + '</p>';
+    }
+    if (auth.github === null) return '';
+    return '<p style="margin-top:10px"><b>No GitHub access yet</b> — set '
+      + '<code>GitHub token</code> in this plugin’s settings (a fine-grained PAT), '
+      + 'or install and log in the <code>gh</code> CLI. For Azure DevOps repos, set '
+      + '<code>Azure DevOps token</code>.</p>';
+  }
+
   function render(data) {
     const repos = data.repos || [];
     if (!repos.length) {
       $app.innerHTML = '<div class="onboard"><div class="big">🚢</div>'
         + '<h3>Point Shiplight at a repo</h3>'
-        + '<p>Set <code>Repos</code> in this plugin’s settings (<code>owner/name</code>) — or just put an agent to work in a project with a GitHub remote and Shiplight will find it.</p></div>';
+        + '<p>Set <code>Repos</code> in this plugin’s settings (<code>owner/name</code> for GitHub, '
+        + '<code>org/project/repo</code> for Azure DevOps) — or just put an agent to work in a '
+        + 'project and Shiplight will find it from the git remote.</p>'
+        + authLine(data.auth)
+        + '</div>';
       return;
     }
     const lamp = lampState(repos);

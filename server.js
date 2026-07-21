@@ -210,8 +210,20 @@ function touchInferred(entry) {
   if (inferred.length > MAX_INFERRED) inferred.pop();
 }
 
+// Agent-scoped panes (opened beside an agent) pin their project's repo so it
+// is polled even when it isn't in the explicit list or the inferred set.
+const pinned = new Map(); // cwd -> entry
+
 function watched() {
-  return EXPLICIT.length ? EXPLICIT.slice() : inferred.slice();
+  const base = EXPLICIT.length ? EXPLICIT.slice() : inferred.slice();
+  const seen = new Set(base.map(entrySlug));
+  for (const entry of pinned.values()) {
+    if (!seen.has(entrySlug(entry))) {
+      seen.add(entrySlug(entry));
+      base.push(entry);
+    }
+  }
+  return base;
 }
 
 wks.on('agent.state_changed', (data) => {
@@ -540,8 +552,24 @@ poll().catch((e) => log('poll error: ' + e.message));
 if (!PAT) ensureGh().catch(() => {});
 
 // ── HTTP: pane UI + state ────────────────────────────────────────────────────
-function stateJson() {
+// A pane opened beside an agent passes its project cwd; resolve it to a repo
+// (git remote, cached), pin it into the watch set, and tell the pane which
+// slug to focus on. focus stays null while resolving or when the cwd has no
+// recognizable remote — the pane says so instead of showing the fleet view.
+async function focusSlugFor(cwd) {
+  if (!cwd) return null;
+  const entry = await entryForCwd(cwd);
+  if (!entry) return null;
+  if (!pinned.has(cwd)) {
+    pinned.set(cwd, entry);
+    poll().catch((e) => log('poll error: ' + e.message));
+  }
+  return entrySlug(entry);
+}
+
+function stateJson(focus) {
   return JSON.stringify({
+    focus: focus ?? null,
     pollSeconds: POLL_SECONDS,
     explicit: EXPLICIT.length > 0,
     // Auth summary for the pane's first-run guidance:
@@ -559,11 +587,18 @@ function stateJson() {
 }
 
 const server = http.createServer((req, res) => {
-  const url = (req.url || '/').split('?')[0];
+  const parsed = new URL(req.url || '/', 'http://x');
+  const url = parsed.pathname;
   if (url === '/health') { res.writeHead(200); return res.end('ok'); }
   if (url === '/state') {
-    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-    return res.end(stateJson());
+    const cwd = parsed.searchParams.get('cwd') || '';
+    focusSlugFor(cwd)
+      .catch(() => null)
+      .then((focus) => {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(stateJson(focus));
+      });
+    return;
   }
   if (url === '/refresh' && req.method === 'POST') {
     poll().catch(() => {});

@@ -202,6 +202,11 @@
   const $updated = document.getElementById('updated');
   const $refresh = document.getElementById('refresh');
 
+  // Opened beside an agent (pane scope 'both'): the host passes the agent's
+  // project directory. The sidecar resolves it to a repo and this pane shows
+  // ONLY that repo — the Overview pane (no cwd) keeps the whole fleet.
+  const FOCUS_CWD = new URLSearchParams(location.search).get('cwd') || '';
+
   const ICONS = {
     check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
     x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>',
@@ -349,7 +354,24 @@
   }
 
   function render(data) {
-    const repos = data.repos || [];
+    let repos = data.repos || [];
+    if (FOCUS_CWD) {
+      if (!data.focus) {
+        $app.innerHTML = runtimeStrip(data) + '<div class="onboard"><div class="big">🚢</div>'
+          + '<h3>No repo to focus on</h3>'
+          + '<p>This pane is scoped to <code>' + esc(FOCUS_CWD) + '</code>, but that directory '
+          + 'has no recognizable GitHub or Azure DevOps <code>origin</code> remote.</p></div>';
+        return;
+      }
+      repos = repos.filter((r) => r.slug === data.focus);
+      if (!repos.length) {
+        // Pinned this poll cycle — data lands on the next tick.
+        $app.innerHTML = runtimeStrip(data) + '<div class="onboard"><div class="big">🚢</div>'
+          + '<h3>Watching ' + esc(data.focus) + '</h3>'
+          + '<p>First poll in progress…</p></div>';
+        return;
+      }
+    }
     if (!repos.length) {
       $app.innerHTML = runtimeStrip(data) + '<div class="onboard"><div class="big">🚢</div>'
         + '<h3>Point Shiplight at a repo</h3>'
@@ -396,10 +418,12 @@
     $updated.textContent = newest ? 'updated ' + rel(newest) + ' ago' : '';
   }
 
+  const STATE_URL = '/state' + (FOCUS_CWD ? '?cwd=' + encodeURIComponent(FOCUS_CWD) : '');
+
   let last = null;
   async function tick() {
     try {
-      const res = await fetch('/state', { cache: 'no-store' });
+      const res = await fetch(STATE_URL, { cache: 'no-store' });
       last = await res.json();
       render(last);
     } catch {

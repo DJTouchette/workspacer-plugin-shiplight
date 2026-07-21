@@ -1,0 +1,372 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Shiplight</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: var(--wks-font-sans, 'Hanken Grotesk', system-ui, sans-serif);
+    font-size: 13px;
+    background: var(--wks-bg-base, #161616);
+    color: var(--wks-text-primary, #e8e8e8);
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; text-decoration: none; }
+
+  /* ── Header ── */
+  header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--wks-border-subtle, #2a2a2a);
+    position: sticky; top: 0; z-index: 2;
+    background: var(--wks-bg-base, #161616);
+  }
+  header h1 { font-size: 0.9rem; margin: 0; font-weight: 700; letter-spacing: 0.01em; }
+  header .spacer { margin-left: auto; }
+  #updated {
+    font-size: 0.62rem; color: var(--wks-text-faint, #777);
+    font-family: var(--wks-font-mono, monospace); font-variant-numeric: tabular-nums;
+  }
+  #refresh {
+    appearance: none; border: 1px solid var(--wks-border-subtle, #2a2a2a);
+    background: transparent; color: var(--wks-text-muted, #999);
+    width: 24px; height: 24px; border-radius: var(--wks-radius-sm, 5px);
+    display: grid; place-items: center; cursor: pointer; padding: 0;
+  }
+  #refresh:hover { background: var(--wks-bg-hover, #242424); color: var(--wks-text-primary, #fff); }
+  #refresh svg { width: 13px; height: 13px; }
+  #refresh.spin svg { animation: rot 0.9s linear infinite; }
+
+  /* ── Hero lamp ── */
+  .hero {
+    display: flex; align-items: center; gap: 14px;
+    padding: 18px 16px;
+    border-bottom: 1px solid var(--wks-border-subtle, #2a2a2a);
+  }
+  .lamp {
+    width: 42px; height: 42px; border-radius: 50%; flex-shrink: 0;
+    background: radial-gradient(circle at 35% 32%,
+      color-mix(in srgb, var(--lampc) 88%, #fff) 0%, var(--lampc) 55%,
+      color-mix(in srgb, var(--lampc) 62%, #000) 100%);
+    box-shadow: 0 0 18px color-mix(in srgb, var(--lampc) 55%, transparent),
+                0 0 46px color-mix(in srgb, var(--lampc) 25%, transparent);
+    transition: background 0.4s, box-shadow 0.4s;
+  }
+  .hero.busy .lamp { animation: breathe 2.2s ease-in-out infinite; }
+  .hero .headline { font-size: 1.05rem; font-weight: 700; line-height: 1.15; }
+  .hero .sub { font-size: 0.7rem; color: var(--wks-text-muted, #999); margin-top: 3px; }
+  @keyframes breathe {
+    0%, 100% { box-shadow: 0 0 14px color-mix(in srgb, var(--lampc) 45%, transparent); }
+    50% { box-shadow: 0 0 26px color-mix(in srgb, var(--lampc) 75%, transparent),
+                      0 0 60px color-mix(in srgb, var(--lampc) 30%, transparent); }
+  }
+
+  /* ── Repo groups ── */
+  .repo { border-bottom: 1px solid var(--wks-border-subtle, #2a2a2a); }
+  .repo:last-child { border-bottom: none; }
+  .repo-head {
+    display: flex; align-items: center; gap: 7px;
+    padding: 11px 16px 7px;
+  }
+  .repo-head .rdot { width: 7px; height: 7px; border-radius: 50%; }
+  .repo-head .slug {
+    font-family: var(--wks-font-mono, monospace); font-size: 0.72rem; font-weight: 600;
+    color: var(--wks-text-secondary, #ccc);
+  }
+  .repo-head .err {
+    margin-left: auto; font-size: 0.62rem; color: var(--wks-error, #f26d6d);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 55%;
+  }
+
+  h2.sect {
+    display: flex; align-items: baseline; gap: 6px;
+    font-size: 0.58rem; letter-spacing: 0.09em; text-transform: uppercase;
+    color: var(--wks-text-faint, #777); font-weight: 700;
+    margin: 6px 0 2px; padding: 0 16px;
+  }
+  h2.sect .count { font-family: var(--wks-font-mono, monospace); font-weight: 400; }
+
+  /* ── Rows ── */
+  .row {
+    display: flex; align-items: center; gap: 9px;
+    padding: 6px 16px; min-width: 0;
+    border-radius: 0;
+  }
+  a.row:hover { background: var(--wks-bg-hover, #222); }
+  .row .main { min-width: 0; flex: 1; }
+  .row .name {
+    font-size: 0.76rem; font-weight: 600;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .row .name .dim { color: var(--wks-text-muted, #999); font-weight: 400; }
+  .row .meta {
+    display: flex; align-items: center; gap: 6px; margin-top: 2px;
+    font-size: 0.62rem; color: var(--wks-text-faint, #777);
+    min-width: 0;
+  }
+  .row .when {
+    font-size: 0.62rem; color: var(--wks-text-faint, #777);
+    font-family: var(--wks-font-mono, monospace); font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+  }
+
+  .chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 1px 6px; border-radius: var(--wks-radius-pill, 999px);
+    font-size: 0.6rem; line-height: 1.5; white-space: nowrap;
+    background: var(--wks-bg-raised, #1f1f1f);
+    border: 1px solid var(--wks-border-subtle, #2a2a2a);
+    color: var(--wks-text-muted, #999);
+    max-width: 160px; overflow: hidden; text-overflow: ellipsis;
+  }
+  .chip.mono { font-family: var(--wks-font-mono, monospace); }
+  .chip svg { width: 9px; height: 9px; flex-shrink: 0; }
+  .chip.ok    { color: var(--wks-success, #3fb950); border-color: color-mix(in srgb, var(--wks-success, #3fb950) 35%, transparent); background: color-mix(in srgb, var(--wks-success, #3fb950) 10%, transparent); }
+  .chip.bad   { color: var(--wks-error, #f26d6d);   border-color: color-mix(in srgb, var(--wks-error, #f26d6d) 35%, transparent);   background: color-mix(in srgb, var(--wks-error, #f26d6d) 10%, transparent); }
+  .chip.warn  { color: var(--wks-warning, #e0a000); border-color: color-mix(in srgb, var(--wks-warning, #e0a000) 35%, transparent);  background: color-mix(in srgb, var(--wks-warning, #e0a000) 10%, transparent); }
+
+  /* status glyphs */
+  .st { width: 18px; height: 18px; flex-shrink: 0; display: grid; place-items: center; }
+  .st svg { width: 14px; height: 14px; }
+  .st.ok svg { color: var(--wks-success, #3fb950); }
+  .st.bad svg { color: var(--wks-error, #f26d6d); }
+  .st.neutral svg { color: var(--wks-text-faint, #777); }
+  .spinner {
+    width: 13px; height: 13px; border-radius: 50%;
+    border: 2px solid color-mix(in srgb, var(--wks-busy, #d29922) 25%, transparent);
+    border-top-color: var(--wks-busy, #d29922);
+    animation: rot 0.9s linear infinite;
+  }
+  @keyframes rot { to { transform: rotate(360deg); } }
+
+  .avatar {
+    width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0;
+    background: var(--wks-bg-raised, #222);
+  }
+  .diffstat { font-family: var(--wks-font-mono, monospace); font-size: 0.6rem; flex-shrink: 0; }
+  .diffstat .add { color: var(--wks-success, #3fb950); }
+  .diffstat .del { color: var(--wks-error, #f26d6d); }
+  .draft { opacity: 0.55; }
+
+  /* checks dot on a PR row */
+  .ckdot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .ckdot.passing { background: var(--wks-success, #3fb950); }
+  .ckdot.failing { background: var(--wks-error, #f26d6d); box-shadow: 0 0 6px color-mix(in srgb, var(--wks-error, #f26d6d) 60%, transparent); }
+  .ckdot.pending { background: var(--wks-busy, #d29922); animation: blink 1.6s ease-in-out infinite; }
+  @keyframes blink { 50% { opacity: 0.35; } }
+
+  .empty { padding: 5px 16px 10px; color: var(--wks-text-faint, #777); font-size: 0.68rem; }
+
+  /* onboarding + skeleton */
+  .onboard { padding: 44px 24px; text-align: center; }
+  .onboard .big { font-size: 2rem; }
+  .onboard h3 { margin: 10px 0 6px; font-size: 0.95rem; }
+  .onboard p { margin: 0 auto; max-width: 340px; color: var(--wks-text-muted, #999); font-size: 0.74rem; line-height: 1.55; }
+  .onboard code {
+    font-family: var(--wks-font-mono, monospace); font-size: 0.68rem;
+    background: var(--wks-bg-raised, #1f1f1f); padding: 1px 5px;
+    border-radius: var(--wks-radius-sm, 5px);
+  }
+  .skel { padding: 6px 16px; display: flex; gap: 9px; align-items: center; }
+  .skel .b { border-radius: var(--wks-radius-sm, 5px); background: var(--wks-bg-raised, #202020);
+             animation: shimmer 1.4s ease-in-out infinite; }
+  @keyframes shimmer { 50% { opacity: 0.45; } }
+
+  .pad-bottom { height: 10px; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>🚢 Shiplight</h1>
+    <span class="spacer"></span>
+    <span id="updated"></span>
+    <button id="refresh" title="Refresh now">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+    </button>
+  </header>
+  <div id="app"></div>
+
+<script>
+  const $app = document.getElementById('app');
+  const $updated = document.getElementById('updated');
+  const $refresh = document.getElementById('refresh');
+
+  const ICONS = {
+    check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+    x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>',
+    dash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 12h12"/></svg>',
+    branch: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="8" r="2.4"/><path d="M6 8.4v7.2M18 10.4c0 4-4.5 3.6-9.5 3.6"/></svg>',
+  };
+
+  const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  function rel(iso) {
+    const t = typeof iso === 'number' ? iso : Date.parse(iso || '');
+    if (!t) return '';
+    const s = Math.max(0, (Date.now() - t) / 1000);
+    if (s < 60) return Math.floor(s) + 's';
+    if (s < 3600) return Math.floor(s / 60) + 'm';
+    if (s < 86400) return Math.floor(s / 3600) + 'h';
+    return Math.floor(s / 86400) + 'd';
+  }
+  function dur(a, b) {
+    const t0 = Date.parse(a || ''), t1 = b ? Date.parse(b) : Date.now();
+    if (!t0 || !t1 || t1 < t0) return '';
+    const s = Math.floor((t1 - t0) / 1000);
+    return s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+  }
+
+  const BAD = ['failure', 'timed_out', 'startup_failure', 'action_required'];
+
+  function runGlyph(r) {
+    if (r.status !== 'completed') return '<span class="st"><span class="spinner"></span></span>';
+    if (r.conclusion === 'success') return '<span class="st ok">' + ICONS.check + '</span>';
+    if (r.conclusion === 'cancelled' || r.conclusion === 'skipped')
+      return '<span class="st neutral">' + ICONS.dash + '</span>';
+    return '<span class="st bad">' + ICONS.x + '</span>';
+  }
+
+  function reviewChip(p) {
+    if (p.review === 'APPROVED') return '<span class="chip ok">' + ICONS.check + 'approved</span>';
+    if (p.review === 'CHANGES_REQUESTED') return '<span class="chip bad">changes</span>';
+    if (p.review === 'REVIEW_REQUIRED') return '<span class="chip warn">review</span>';
+    return '';
+  }
+
+  // Pipelines worth showing: everything still running, then the latest
+  // completed run per workflow (the verdict that stands), capped.
+  function displayRuns(runs) {
+    const active = runs.filter((r) => r.status !== 'completed');
+    const doneByWf = new Map();
+    for (const r of runs) {
+      if (r.status !== 'completed') continue;
+      if (!doneByWf.has(r.workflow)) doneByWf.set(r.workflow, r);
+    }
+    return active.concat(Array.from(doneByWf.values()).slice(0, 5));
+  }
+
+  function lampState(repos) {
+    let busy = 0, red = 0;
+    for (const rp of repos) {
+      for (const r of rp.runs || []) {
+        if (r.status !== 'completed') busy++;
+      }
+      for (const r of displayRuns(rp.runs || [])) {
+        if (r.status === 'completed' && BAD.includes(r.conclusion)) red++;
+      }
+      for (const p of rp.prs || []) if (p.checks === 'failing' && !p.draft) red++;
+    }
+    if (red) return { c: 'var(--wks-error, #f26d6d)', cls: '', head: red === 1 ? 'Something is red' : red + ' things are red', sub: 'A pipeline or PR needs eyes' };
+    if (busy) return { c: 'var(--wks-busy, #d29922)', cls: 'busy', head: busy === 1 ? '1 pipeline running' : busy + ' pipelines running', sub: 'Shiplight will notify the verdict' };
+    return { c: 'var(--wks-success, #3fb950)', cls: '', head: 'All clear', sub: 'Every pipeline green, no PR on fire' };
+  }
+
+  function repoDot(rp) {
+    const hasRed = displayRuns(rp.runs || []).some((r) => r.status === 'completed' && BAD.includes(r.conclusion))
+      || (rp.prs || []).some((p) => p.checks === 'failing' && !p.draft);
+    const hasBusy = (rp.runs || []).some((r) => r.status !== 'completed');
+    const c = hasRed ? 'var(--wks-error, #f26d6d)' : hasBusy ? 'var(--wks-busy, #d29922)' : 'var(--wks-success, #3fb950)';
+    return '<span class="rdot" style="background:' + c + '"></span>';
+  }
+
+  function runRow(r) {
+    return '<a class="row" href="' + esc(r.url) + '" target="_blank" rel="noreferrer">'
+      + runGlyph(r)
+      + '<span class="main"><span class="name">' + esc(r.workflow || 'CI')
+      + (r.title && r.title !== r.workflow ? ' <span class="dim">· ' + esc(r.title) + '</span>' : '')
+      + '</span><span class="meta"><span class="chip mono">' + ICONS.branch + esc(r.branch || '?') + '</span>'
+      + (r.event ? '<span>' + esc(r.event) + '</span>' : '')
+      + (r.status !== 'completed' ? '<span>' + dur(r.startedAt) + ' elapsed</span>'
+                                  : '<span>' + dur(r.startedAt, r.updatedAt) + '</span>')
+      + '</span></span>'
+      + '<span class="when">' + rel(r.status === 'completed' ? r.updatedAt : r.startedAt) + '</span>'
+      + '</a>';
+  }
+
+  function prRow(p) {
+    return '<a class="row' + (p.draft ? ' draft' : '') + '" href="' + esc(p.url) + '" target="_blank" rel="noreferrer">'
+      + (p.checks ? '<span class="ckdot ' + p.checks + '" title="checks ' + p.checks + '"></span>' : '<span class="ckdot" style="background:var(--wks-border-subtle, #2a2a2a)"></span>')
+      + (p.author ? '<img class="avatar" src="https://github.com/' + encodeURIComponent(p.author) + '.png?size=36" alt="" loading="lazy" />' : '')
+      + '<span class="main"><span class="name"><span class="dim">#' + p.number + '</span> ' + esc(p.title) + '</span>'
+      + '<span class="meta">'
+      + (p.draft ? '<span class="chip">draft</span>' : '')
+      + reviewChip(p)
+      + '<span class="chip mono">' + ICONS.branch + esc(p.branch) + '</span>'
+      + '</span></span>'
+      + '<span class="diffstat"><span class="add">+' + (p.additions || 0) + '</span> <span class="del">−' + (p.deletions || 0) + '</span></span>'
+      + '<span class="when">' + rel(p.updatedAt) + '</span>'
+      + '</a>';
+  }
+
+  function render(data) {
+    const repos = data.repos || [];
+    if (!repos.length) {
+      $app.innerHTML = '<div class="onboard"><div class="big">🚢</div>'
+        + '<h3>Point Shiplight at a repo</h3>'
+        + '<p>Set <code>Repos</code> in this plugin’s settings (<code>owner/name</code>) — or just put an agent to work in a project with a GitHub remote and Shiplight will find it.</p></div>';
+      return;
+    }
+    const lamp = lampState(repos);
+    let html = '<div class="hero ' + lamp.cls + '" style="--lampc:' + lamp.c + '">'
+      + '<div class="lamp"></div><div><div class="headline">' + esc(lamp.head) + '</div>'
+      + '<div class="sub">' + esc(lamp.sub) + '</div></div></div>';
+
+    for (const rp of repos) {
+      html += '<div class="repo">'
+        + '<div class="repo-head">' + repoDot(rp)
+        + '<a class="slug" href="https://github.com/' + esc(rp.slug) + '" target="_blank" rel="noreferrer">' + esc(rp.slug) + '</a>'
+        + (rp.error ? '<span class="err" title="' + esc(rp.error) + '">' + esc(rp.error) + '</span>' : '')
+        + '</div>';
+
+      if (!rp.fetchedAt && !rp.error) {
+        for (let i = 0; i < 3; i++) {
+          html += '<div class="skel"><span class="b" style="width:14px;height:14px;border-radius:50%"></span>'
+            + '<span class="b" style="width:' + (46 - i * 9) + '%;height:10px"></span></div>';
+        }
+        html += '</div>';
+        continue;
+      }
+
+      const runs = displayRuns(rp.runs || []);
+      html += '<h2 class="sect">Pipelines <span class="count">' + runs.length + '</span></h2>';
+      html += runs.length ? runs.map(runRow).join('') : '<div class="empty">No recent runs.</div>';
+
+      const prs = rp.prs || [];
+      html += '<h2 class="sect">Pull requests <span class="count">' + prs.length + '</span></h2>';
+      html += prs.length ? prs.map(prRow).join('') : '<div class="empty">No open PRs — clear water.</div>';
+      html += '<div class="pad-bottom"></div></div>';
+    }
+    $app.innerHTML = html;
+
+    const newest = Math.max(0, ...repos.map((r) => r.fetchedAt || 0));
+    $updated.textContent = newest ? 'updated ' + rel(newest) + ' ago' : '';
+  }
+
+  let last = null;
+  async function tick() {
+    try {
+      const res = await fetch('/state', { cache: 'no-store' });
+      last = await res.json();
+      render(last);
+    } catch {
+      /* sidecar restarting — keep the last view */
+    }
+  }
+
+  $refresh.addEventListener('click', async () => {
+    $refresh.classList.add('spin');
+    try { await fetch('/refresh', { method: 'POST' }); } catch {}
+    setTimeout(async () => { await tick(); $refresh.classList.remove('spin'); }, 900);
+  });
+
+  tick();
+  setInterval(tick, 5000);
+  // Keep relative times fresh between fetches.
+  setInterval(() => { if (last) render(last); }, 30000);
+</script>
+</body>
+</html>

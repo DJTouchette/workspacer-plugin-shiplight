@@ -1,0 +1,59 @@
+{
+  "id": "djtouchette.shiplight",
+  "name": "Shiplight",
+  "apiVersion": "1",
+  "server": {
+    "command": "node",
+    "args": ["server.js"],
+    "port": 9211,
+    "health": "/health"
+  },
+  "panes": [
+    {
+      "type": "djtouchette.shiplight",
+      "title": "Shiplight",
+      "icon": "🚢",
+      "scope": "global",
+      "path": "/"
+    }
+  ],
+  "settings": [
+    {
+      "key": "repo",
+      "label": "Repos (owner/name, comma-separated)",
+      "type": "string",
+      "default": "",
+      "help": "Repos to watch. Empty = infer from the projects your agents work in."
+    },
+    {
+      "key": "token",
+      "label": "GitHub token (PAT)",
+      "type": "string",
+      "default": "",
+      "help": "Fine-grained PAT with repo read access. Empty = use the gh CLI's auth."
+    },
+    {
+      "key": "pollSeconds",
+      "label": "Poll interval (s)",
+      "type": "number",
+      "default": 30,
+      "help": "How often to poll GitHub."
+    },
+    {
+      "key": "notifyRuns",
+      "label": "Notify on pipeline verdicts",
+      "type": "boolean",
+      "default": true,
+      "help": "OS notification when a watched pipeline concludes."
+    },
+    {
+      "key": "notifyPrs",
+      "label": "Notify on PR activity",
+      "type": "boolean",
+      "default": true,
+      "help": "OS notification on PR opened / approved / changes requested / merged."
+    }
+  ],
+  "capabilities": ["notifications.post"],
+  "consumes": ["agent.state_changed"]
+}

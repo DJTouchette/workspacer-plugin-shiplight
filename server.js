@@ -148,7 +148,22 @@ module.exports = {
 if (require.main !== module) return;
 
 // ── Runtime state ────────────────────────────────────────────────────────────
+// Any startup throw must leave a readable line in the sidecar log — a bare
+// "exit status 1" in the plugins manager is undebuggable.
+process.on('uncaughtException', (err) => {
+  console.error('[' + manifest.id + '] fatal: ' + (err && err.stack ? err.stack : err));
+  process.exit(1);
+});
+
 const wks = connect({ source: manifest.id });
+const BUS_OK = wks.busAvailable !== false;
+if (!BUS_OK) {
+  log(
+    'Node ' + process.versions.node + ' has no built-in WebSocket (need >= 22): ' +
+    'running degraded — notifications and repo inference are OFF; ' +
+    'explicit repos + tokens still work. Upgrade Node to restore full function.',
+  );
+}
 const settings = Object.assign({}, wks.settings, envSettings);
 
 const POLL_SECONDS = Math.max(10, Number(settings.pollSeconds) || 30);
@@ -536,6 +551,9 @@ function stateJson() {
       github: PAT ? 'pat' : ghReady === null ? null : ghReady ? 'gh' : 'none',
       ado: ADO_PAT ? 'pat' : 'none',
     },
+    // Degraded-mode signal for the pane's warning strip (old Node → no bus →
+    // no notifications / repo inference).
+    runtime: { node: process.versions.node, busAvailable: BUS_OK },
     repos: Array.from(state.repos.values()),
   });
 }
@@ -557,5 +575,14 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(buf);
   });
+});
+server.on('error', (e) => {
+  log(
+    'http server error: ' + e.message +
+    (e && e.code === 'EADDRINUSE'
+      ? ' — port ' + PORT + ' is already in use (a previous Shiplight instance still running?)'
+      : ''),
+  );
+  process.exit(1);
 });
 server.listen(PORT, '127.0.0.1', () => log('pane on http://127.0.0.1:' + PORT));

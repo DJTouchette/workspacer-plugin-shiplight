@@ -338,10 +338,20 @@
       + '<code>Azure DevOps token</code>.</p>';
   }
 
+  function runtimeStrip(data) {
+    const rt = data.runtime;
+    if (!rt || rt.busAvailable !== false) return '';
+    return '<div style="padding:7px 16px;font-size:0.64rem;color:var(--wks-warning, #e0a000);'
+      + 'background:color-mix(in srgb, var(--wks-warning, #e0a000) 8%, transparent);'
+      + 'border-bottom:1px solid var(--wks-border-subtle, #2a2a2a)">'
+      + '⚠ Node ' + esc(rt.node) + ' — notifications and repo auto-detect are off '
+      + '(needs Node ≥ 22). Explicit repos + tokens still work.</div>';
+  }
+
   function render(data) {
     const repos = data.repos || [];
     if (!repos.length) {
-      $app.innerHTML = '<div class="onboard"><div class="big">🚢</div>'
+      $app.innerHTML = runtimeStrip(data) + '<div class="onboard"><div class="big">🚢</div>'
         + '<h3>Point Shiplight at a repo</h3>'
         + '<p>Set <code>Repos</code> in this plugin’s settings (<code>owner/name</code> for GitHub, '
         + '<code>org/project/repo</code> for Azure DevOps) — or just put an agent to work in a '
@@ -351,7 +361,7 @@
       return;
     }
     const lamp = lampState(repos);
-    let html = '<div class="hero ' + lamp.cls + '" style="--lampc:' + lamp.c + '">'
+    let html = runtimeStrip(data) + '<div class="hero ' + lamp.cls + '" style="--lampc:' + lamp.c + '">'
       + '<div class="lamp"></div><div><div class="headline">' + esc(lamp.head) + '</div>'
       + '<div class="sub">' + esc(lamp.sub) + '</div></div></div>';
 

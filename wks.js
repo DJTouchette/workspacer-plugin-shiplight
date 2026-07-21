@@ -22,7 +22,29 @@ function readSettings() {
 }
 
 // connect() -> { ready, connected, call, publish, on, onStatus, settings } — mirrors window.workspacer.
+//
+// Requires the global WebSocket (Node >= 22). On older Nodes this returns a
+// DEAD client instead of throwing at boot: calls reject, no events arrive,
+// settings still load — so a sidecar can keep serving its pane degraded
+// rather than crash-looping with "exit status 1" and no explanation.
 function connect(opts = {}) {
+  if (typeof WebSocket === 'undefined') {
+    return {
+      ready: Promise.resolve(),
+      connected: false,
+      busAvailable: false,
+      call: async (method) => {
+        throw new Error(
+          'hub bus unavailable: Node ' + process.versions.node +
+          ' has no built-in WebSocket (need >= 22) — cannot call ' + method,
+        );
+      },
+      publish: () => {},
+      on: () => {},
+      onStatus: (cb) => { try { cb(false); } catch {} },
+      settings: readSettings(),
+    };
+  }
   const url = opts.url || 'ws://127.0.0.1:7895/bus';
   const source = opts.source || 'sidecar';
   const listeners = new Map(); // type -> Set(cb)
@@ -89,6 +111,7 @@ function connect(opts = {}) {
 
   return {
     ready,
+    busAvailable: true,
     get connected() {
       return connected;
     },

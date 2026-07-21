@@ -1,6 +1,6 @@
 # 🚢 Shiplight
 
-**Running pipelines and open PRs for your project, at a glance — with notifications when something needs you.**
+Running pipelines and open PRs for your project, at a glance — with notifications when something needs you.
 
 A [workspacer](https://github.com/DJTouchette/workspacer) plugin. One glanceable lamp — green when everything is clear, amber and breathing while pipelines run, red when something needs eyes — over a designed board of your GitHub Actions runs and open pull requests.
 

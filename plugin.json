@@ -20,10 +20,10 @@
   "settings": [
     {
       "key": "repo",
-      "label": "Repos (owner/name, comma-separated)",
+      "label": "Repos (comma-separated)",
       "type": "string",
       "default": "",
-      "help": "Repos to watch. Empty = infer from the projects your agents work in."
+      "help": "owner/name (GitHub) or org/project/repo (Azure DevOps). Empty = infer from the projects your agents work in."
     },
     {
       "key": "token",
@@ -31,6 +31,13 @@
       "type": "string",
       "default": "",
       "help": "Fine-grained PAT with repo read access. Empty = use the gh CLI's auth."
+    },
+    {
+      "key": "adoToken",
+      "label": "Azure DevOps token (PAT)",
+      "type": "string",
+      "default": "",
+      "help": "ADO PAT with Code (read) + Build (read) scopes. Required for Azure DevOps repos."
     },
     {
       "key": "pollSeconds",

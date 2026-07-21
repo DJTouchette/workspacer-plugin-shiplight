@@ -1,14 +1,17 @@
 #!/usr/bin/env node
 // Shiplight — running pipelines + open PRs for your project, at a glance.
 //
-// Sidecar: polls GitHub for the watched repos (explicit setting, or inferred
-// from the projects your agents touch), serves the pane UI from ./ui, and
-// posts OS notifications on state *transitions* (a pipeline concluding, a PR
-// getting approved / changes-requested / opened / merged) — never on states
-// that were already true when it started watching.
+// Sidecar: polls GitHub and/or Azure DevOps for the watched repos (explicit
+// setting, or inferred from the projects your agents touch), serves the pane
+// UI from ./ui, and posts OS notifications on state *transitions* (a pipeline
+// concluding, a PR getting approved / changes-requested / opened / merged) —
+// never on states that were already true when it started watching.
 //
-// Data source: a PAT (settings.token → REST + GraphQL) or the gh CLI's own
-// auth. Zero dependencies — Node >= 22 built-ins only.
+// Sources:
+//   GitHub       — a PAT (settings.token → REST + GraphQL) or the gh CLI.
+//   Azure DevOps — a PAT (settings.adoToken → REST 7.1).
+// Both normalize into one {runs, prs} shape; everything downstream (lamp,
+// notifications, pane) is source-agnostic. Zero dependencies — Node >= 22.
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -19,131 +22,70 @@ const DIR = __dirname;
 const manifest = JSON.parse(fs.readFileSync(path.join(DIR, 'plugin.json'), 'utf8'));
 const PORT = Number(process.env.PORT || (manifest.server && manifest.server.port) || 9211);
 
-const wks = connect({ source: manifest.id });
-
 // Settings: WKS_SETTINGS (defaults merged by the hub) over the raw overlay
-// file the SDK reads; every read below still applies a code default.
+// file; every read below still applies a code default.
 let envSettings = {};
 try { envSettings = JSON.parse(process.env.WKS_SETTINGS || '{}'); } catch {}
-const settings = Object.assign({}, wks.settings, envSettings);
-
-const POLL_SECONDS = Math.max(10, Number(settings.pollSeconds) || 30);
-const EXPLICIT_REPOS = String(settings.repo || '')
-  .split(/[\s,]+/)
-  .map((s) => s.trim())
-  .filter((s) => /^[^/]+\/[^/]+$/.test(s));
-const PAT = String(settings.token || '').trim();
-const NOTIFY_RUNS = settings.notifyRuns !== false;
-const NOTIFY_PRS = settings.notifyPrs !== false;
-const MAX_INFERRED = 3;
 
 function log(msg) {
   console.log('[' + manifest.id + '] ' + msg);
 }
 
-// ── Repo inference (no explicit setting) ─────────────────────────────────────
-// agent.state_changed carries the agent's cwd; its git remote names the repo.
-const cwdSlugCache = new Map(); // cwd -> slug | '' (negative-cached)
-const inferred = []; // slugs, most recently active first
-
-function run(cmd, args, opts) {
-  return new Promise((resolve) => {
-    execFile(cmd, args, { timeout: 20000, maxBuffer: 4 * 1024 * 1024, ...(opts || {}) }, (err, stdout, stderr) => {
-      resolve({
-        ok: !err,
-        enoent: !!(err && err.code === 'ENOENT'),
-        stdout: (stdout || '').toString(),
-        stderr: (stderr || '').toString(),
-      });
-    });
-  });
+// ── Watch entries ────────────────────────────────────────────────────────────
+// entry: { kind:'github', slug:'owner/name' }
+//      | { kind:'ado', org, project, repo }   (slug = 'org/project/repo')
+function entrySlug(e) {
+  return e.kind === 'ado' ? e.org + '/' + e.project + '/' + e.repo : e.slug;
 }
 
-function parseRepoSlug(url) {
-  if (!url) return '';
+function entryUrl(e) {
+  if (e.kind === 'ado') {
+    return 'https://dev.azure.com/' + encodeURIComponent(e.org) + '/'
+      + encodeURIComponent(e.project) + '/_git/' + encodeURIComponent(e.repo);
+  }
+  return 'https://github.com/' + e.slug;
+}
+
+// A settings entry: 'owner/name' (GitHub) or 'org/project/repo' (Azure DevOps).
+function parseWatchEntry(s) {
+  const parts = String(s || '').trim().split('/').filter(Boolean);
+  if (parts.length === 2) return { kind: 'github', slug: parts.join('/') };
+  if (parts.length === 3) return { kind: 'ado', org: parts[0], project: parts[1], repo: parts[2] };
+  return null;
+}
+
+// A git remote URL → watch entry. Azure DevOps forms first — the generic
+// last-two-segments GitHub fallback would misread them.
+//   git@ssh.dev.azure.com:v3/org/project/repo
+//   https://[user@]dev.azure.com/org/project/_git/repo
+//   https://org.visualstudio.com/[DefaultCollection/]project/_git/repo
+//   git@github.com:owner/name.git | https://github.com/owner/name
+function parseRemote(url) {
+  if (!url) return null;
   const s = url.trim().replace(/\.git$/i, '');
-  const m = s.match(/[:/]([^/:]+)\/([^/]+)$/);
-  return m ? m[1] + '/' + m[2] : '';
+  const dec = (x) => { try { return decodeURIComponent(x); } catch { return x; } };
+  let m = s.match(/ssh\.dev\.azure\.com[:/]v3\/([^/]+)\/([^/]+)\/([^/]+)$/i);
+  if (m) return { kind: 'ado', org: dec(m[1]), project: dec(m[2]), repo: dec(m[3]) };
+  m = s.match(/dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/([^/]+)$/i);
+  if (m) return { kind: 'ado', org: dec(m[1]), project: dec(m[2]), repo: dec(m[3]) };
+  m = s.match(/\/\/(?:[^/@]+@)?([^/.]+)\.visualstudio\.com\/(?:DefaultCollection\/)?([^/]+)\/_git\/([^/]+)$/i);
+  if (m) return { kind: 'ado', org: dec(m[1]), project: dec(m[2]), repo: dec(m[3]) };
+  m = s.match(/[:/]([^/:]+)\/([^/]+)$/);
+  if (m) return { kind: 'github', slug: m[1] + '/' + m[2] };
+  return null;
 }
 
-async function slugForCwd(cwd) {
-  if (!cwd) return '';
-  if (cwdSlugCache.has(cwd)) return cwdSlugCache.get(cwd);
-  const r = await run('git', ['-C', cwd, 'remote', 'get-url', 'origin']);
-  const slug = r.ok ? parseRepoSlug(r.stdout) : '';
-  cwdSlugCache.set(cwd, slug);
-  return slug;
+// ── Normalization helpers (shared by all sources) ────────────────────────────
+// run: { id, workflow, title, status, conclusion, branch, event, url, startedAt, updatedAt }
+// pr:  { number, title, author, avatar, draft, branch, review, checks, url,
+//        updatedAt, additions, deletions }   (additions null = unknown, UI hides)
+
+function stripRef(ref) {
+  const s = String(ref || '');
+  const pr = s.match(/^refs\/pull\/(\d+)\/(?:merge|head)$/);
+  if (pr) return 'PR #' + pr[1];
+  return s.replace(/^refs\/heads\//, '');
 }
-
-function touchInferred(slug) {
-  if (!slug) return;
-  const i = inferred.indexOf(slug);
-  if (i === 0) return;
-  if (i > 0) inferred.splice(i, 1);
-  inferred.unshift(slug);
-  if (inferred.length > MAX_INFERRED) inferred.pop();
-}
-
-function watchedRepos() {
-  return EXPLICIT_REPOS.length ? EXPLICIT_REPOS : inferred.slice();
-}
-
-wks.on('agent.state_changed', (data) => {
-  const cwd = data && data.cwd;
-  if (!cwd || EXPLICIT_REPOS.length) return;
-  slugForCwd(cwd)
-    .then((slug) => {
-      if (!slug) return;
-      const fresh = !inferred.includes(slug);
-      touchInferred(slug);
-      if (fresh) {
-        log('watching ' + slug + ' (inferred from ' + cwd + ')');
-        poll().catch((e) => log('poll error: ' + e.message));
-      }
-    })
-    .catch(() => {});
-});
-wks.onStatus((c) => { if (c) log('connected to hub bus'); });
-
-// ── GitHub access: PAT (REST + GraphQL) or gh CLI ────────────────────────────
-let ghReady = null;
-async function ensureGh() {
-  if (ghReady !== null) return ghReady;
-  const ver = await run('gh', ['--version']);
-  if (ver.enoent || !ver.ok) {
-    log('gh CLI not found — set a PAT in settings or install https://cli.github.com/');
-    ghReady = false;
-    return false;
-  }
-  const auth = await run('gh', ['auth', 'status']);
-  if (!auth.ok) {
-    log('gh is not authenticated (run: gh auth login) — or set a PAT in settings');
-    ghReady = false;
-    return false;
-  }
-  ghReady = true;
-  return true;
-}
-
-async function apiFetch(url, init) {
-  const res = await fetch(url, {
-    ...(init || {}),
-    headers: {
-      Authorization: 'Bearer ' + PAT,
-      Accept: 'application/vnd.github+json',
-      'User-Agent': 'workspacer-shiplight',
-      ...((init && init.headers) || {}),
-    },
-  });
-  if (!res.ok) throw new Error('GitHub ' + res.status + ' for ' + url.replace(/^https:\/\/api\.github\.com/, ''));
-  return res.json();
-}
-
-// Normalized shapes the UI renders:
-//   run: { id, workflow, title, status, conclusion, branch, event, url, startedAt, updatedAt }
-//   pr:  { number, title, author, draft, branch, review, checks, url, updatedAt, additions, deletions }
-// review ∈ APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | null
-// checks ∈ passing | failing | pending | null
 
 function rollupFromContexts(contexts) {
   let pending = false, ok = false;
@@ -165,19 +107,162 @@ function rollupFromState(state) {
   return 'failing';
 }
 
-async function fetchRunsPat(slug) {
-  const data = await apiFetch('https://api.github.com/repos/' + slug + '/actions/runs?per_page=20');
-  return (data.workflow_runs || []).map((r) => ({
-    id: r.id,
-    workflow: r.name || '',
-    title: r.display_title || '',
-    status: r.status,
-    conclusion: r.conclusion,
-    branch: r.head_branch || '',
-    event: r.event || '',
-    url: r.html_url || '',
-    startedAt: r.run_started_at || r.created_at || '',
-    updatedAt: r.updated_at || '',
+// Azure DevOps reviewer votes: 10 approved, 5 approved-with-suggestions,
+// 0 no vote, -5 waiting for author, -10 rejected.
+function adoVotesToReview(reviewers) {
+  const rs = Array.isArray(reviewers) ? reviewers : [];
+  let max = 0, min = 0, required = false;
+  for (const r of rs) {
+    const v = Number(r.vote) || 0;
+    if (v > max) max = v;
+    if (v < min) min = v;
+    if (r.isRequired) required = true;
+  }
+  if (min <= -5) return 'CHANGES_REQUESTED';
+  if (max >= 5) return 'APPROVED';
+  return required ? 'REVIEW_REQUIRED' : null;
+}
+
+function adoBuildConclusion(result) {
+  if (result === 'succeeded') return 'success';
+  if (result === 'canceled') return 'cancelled';
+  if (!result) return null;
+  return 'failure'; // failed | partiallySucceeded — both need eyes
+}
+
+// Latest build on a PR's source branch stands in for its checks rollup
+// (Azure DevOps has no cheap per-PR rollup in the PR list call).
+function adoChecksFromRuns(runs, branch) {
+  for (const r of runs || []) {
+    if (r.branch !== branch) continue;
+    if (r.status !== 'completed') return 'pending';
+    return r.conclusion === 'success' ? 'passing' : r.conclusion === 'cancelled' ? null : 'failing';
+  }
+  return null;
+}
+
+module.exports = {
+  parseWatchEntry, parseRemote, stripRef, entrySlug, entryUrl,
+  rollupFromContexts, rollupFromState, adoVotesToReview, adoBuildConclusion, adoChecksFromRuns,
+};
+if (require.main !== module) return;
+
+// ── Runtime state ────────────────────────────────────────────────────────────
+const wks = connect({ source: manifest.id });
+const settings = Object.assign({}, wks.settings, envSettings);
+
+const POLL_SECONDS = Math.max(10, Number(settings.pollSeconds) || 30);
+// Comma-separated only — Azure DevOps project names may contain spaces.
+const EXPLICIT = String(settings.repo || '')
+  .split(',').map(parseWatchEntry).filter(Boolean);
+const PAT = String(settings.token || '').trim();
+const ADO_PAT = String(settings.adoToken || process.env.AZURE_DEVOPS_EXT_PAT || '').trim();
+const NOTIFY_RUNS = settings.notifyRuns !== false;
+const NOTIFY_PRS = settings.notifyPrs !== false;
+const MAX_INFERRED = 3;
+
+const cwdEntryCache = new Map(); // cwd -> entry | null
+const inferred = []; // entries, most recently active first
+
+function run(cmd, args, opts) {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { timeout: 20000, maxBuffer: 4 * 1024 * 1024, ...(opts || {}) }, (err, stdout, stderr) => {
+      resolve({
+        ok: !err,
+        enoent: !!(err && err.code === 'ENOENT'),
+        stdout: (stdout || '').toString(),
+        stderr: (stderr || '').toString(),
+      });
+    });
+  });
+}
+
+async function entryForCwd(cwd) {
+  if (!cwd) return null;
+  if (cwdEntryCache.has(cwd)) return cwdEntryCache.get(cwd);
+  const r = await run('git', ['-C', cwd, 'remote', 'get-url', 'origin']);
+  const entry = r.ok ? parseRemote(r.stdout) : null;
+  cwdEntryCache.set(cwd, entry);
+  return entry;
+}
+
+function touchInferred(entry) {
+  const slug = entrySlug(entry);
+  const i = inferred.findIndex((e) => entrySlug(e) === slug);
+  if (i === 0) return;
+  if (i > 0) inferred.splice(i, 1);
+  inferred.unshift(entry);
+  if (inferred.length > MAX_INFERRED) inferred.pop();
+}
+
+function watched() {
+  return EXPLICIT.length ? EXPLICIT.slice() : inferred.slice();
+}
+
+wks.on('agent.state_changed', (data) => {
+  const cwd = data && data.cwd;
+  if (!cwd || EXPLICIT.length) return;
+  entryForCwd(cwd)
+    .then((entry) => {
+      if (!entry) return;
+      const fresh = !inferred.some((e) => entrySlug(e) === entrySlug(entry));
+      touchInferred(entry);
+      if (fresh) {
+        log('watching ' + entrySlug(entry) + ' (inferred from ' + cwd + ')');
+        poll().catch((e) => log('poll error: ' + e.message));
+      }
+    })
+    .catch(() => {});
+});
+wks.onStatus((c) => { if (c) log('connected to hub bus'); });
+
+// ── GitHub: PAT (REST + GraphQL) or gh CLI ───────────────────────────────────
+let ghReady = null;
+async function ensureGh() {
+  if (ghReady !== null) return ghReady;
+  const ver = await run('gh', ['--version']);
+  if (ver.enoent || !ver.ok) { ghReady = false; return false; }
+  const auth = await run('gh', ['auth', 'status']);
+  ghReady = auth.ok;
+  return ghReady;
+}
+
+async function ghApi(url, init) {
+  const res = await fetch(url, {
+    ...(init || {}),
+    headers: {
+      Authorization: 'Bearer ' + PAT,
+      Accept: 'application/vnd.github+json',
+      'User-Agent': 'workspacer-shiplight',
+      ...((init && init.headers) || {}),
+    },
+  });
+  if (!res.ok) throw new Error('GitHub ' + res.status);
+  return res.json();
+}
+
+function ghJson(stdout) {
+  try { return JSON.parse(stdout); } catch { return null; }
+}
+
+async function fetchRunsGithub(e) {
+  if (PAT) {
+    const data = await ghApi('https://api.github.com/repos/' + e.slug + '/actions/runs?per_page=20');
+    return (data.workflow_runs || []).map((r) => ({
+      id: r.id, workflow: r.name || '', title: r.display_title || '',
+      status: r.status, conclusion: r.conclusion,
+      branch: r.head_branch || '', event: r.event || '', url: r.html_url || '',
+      startedAt: r.run_started_at || r.created_at || '', updatedAt: r.updated_at || '',
+    }));
+  }
+  const r = await run('gh', ['run', 'list', '--repo', e.slug, '--limit', '20', '--json',
+    'databaseId,workflowName,displayTitle,status,conclusion,headBranch,event,url,startedAt,updatedAt']);
+  if (!r.ok) throw new Error((r.stderr || 'gh run list failed').trim().split('\n')[0]);
+  return (ghJson(r.stdout) || []).map((x) => ({
+    id: x.databaseId, workflow: x.workflowName || '', title: x.displayTitle || '',
+    status: x.status, conclusion: x.conclusion || null,
+    branch: x.headBranch || '', event: x.event || '', url: x.url || '',
+    startedAt: x.startedAt || '', updatedAt: x.updatedAt || '',
   }));
 }
 
@@ -188,90 +273,138 @@ const PR_QUERY = `query($owner:String!,$name:String!){
         author{login} reviewDecision
         commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } } } } } }`;
 
-async function fetchPrsPat(slug) {
-  const [owner, name] = slug.split('/');
-  const data = await apiFetch('https://api.github.com/graphql', {
-    method: 'POST',
-    body: JSON.stringify({ query: PR_QUERY, variables: { owner, name } }),
-  });
-  if (data.errors && data.errors.length) throw new Error('GraphQL: ' + data.errors[0].message);
-  const nodes = (((data.data || {}).repository || {}).pullRequests || {}).nodes || [];
-  return nodes.map((p) => ({
-    number: p.number,
-    title: p.title || '',
-    author: (p.author && p.author.login) || '',
-    draft: !!p.isDraft,
-    branch: p.headRefName || '',
-    review: p.reviewDecision || null,
-    checks: rollupFromState((((p.commits || {}).nodes || [])[0] || { commit: {} }).commit.statusCheckRollup
-      && p.commits.nodes[0].commit.statusCheckRollup.state),
-    url: p.url || '',
-    updatedAt: p.updatedAt || '',
-    additions: p.additions || 0,
-    deletions: p.deletions || 0,
-  }));
-}
-
-function ghJson(stdout) {
-  try { return JSON.parse(stdout); } catch { return null; }
-}
-
-async function fetchRunsGh(slug) {
-  const r = await run('gh', ['run', 'list', '--repo', slug, '--limit', '20', '--json',
-    'databaseId,workflowName,displayTitle,status,conclusion,headBranch,event,url,startedAt,updatedAt']);
-  if (!r.ok) throw new Error((r.stderr || 'gh run list failed').trim().split('\n')[0]);
-  return (ghJson(r.stdout) || []).map((x) => ({
-    id: x.databaseId,
-    workflow: x.workflowName || '',
-    title: x.displayTitle || '',
-    status: x.status,
-    conclusion: x.conclusion || null,
-    branch: x.headBranch || '',
-    event: x.event || '',
-    url: x.url || '',
-    startedAt: x.startedAt || '',
-    updatedAt: x.updatedAt || '',
-  }));
-}
-
-async function fetchPrsGh(slug) {
-  const r = await run('gh', ['pr', 'list', '--repo', slug, '--limit', '30', '--json',
+async function fetchPrsGithub(e) {
+  if (PAT) {
+    const [owner, name] = e.slug.split('/');
+    const data = await ghApi('https://api.github.com/graphql', {
+      method: 'POST',
+      body: JSON.stringify({ query: PR_QUERY, variables: { owner, name } }),
+    });
+    if (data.errors && data.errors.length) throw new Error('GraphQL: ' + data.errors[0].message);
+    const nodes = (((data.data || {}).repository || {}).pullRequests || {}).nodes || [];
+    return nodes.map((p) => {
+      const login = (p.author && p.author.login) || '';
+      const roll = ((((p.commits || {}).nodes || [])[0] || {}).commit || {}).statusCheckRollup;
+      return {
+        number: p.number, title: p.title || '', author: login,
+        avatar: login ? 'https://github.com/' + encodeURIComponent(login) + '.png?size=36' : '',
+        draft: !!p.isDraft, branch: p.headRefName || '',
+        review: p.reviewDecision || null, checks: rollupFromState(roll && roll.state),
+        url: p.url || '', updatedAt: p.updatedAt || '',
+        additions: p.additions || 0, deletions: p.deletions || 0,
+      };
+    });
+  }
+  const r = await run('gh', ['pr', 'list', '--repo', e.slug, '--limit', '30', '--json',
     'number,title,author,isDraft,headRefName,reviewDecision,statusCheckRollup,url,updatedAt,additions,deletions']);
   if (!r.ok) throw new Error((r.stderr || 'gh pr list failed').trim().split('\n')[0]);
-  return (ghJson(r.stdout) || []).map((p) => ({
-    number: p.number,
-    title: p.title || '',
-    author: (p.author && p.author.login) || '',
-    draft: !!p.isDraft,
-    branch: p.headRefName || '',
-    review: p.reviewDecision || null,
-    checks: rollupFromContexts(p.statusCheckRollup),
-    url: p.url || '',
-    updatedAt: p.updatedAt || '',
-    additions: p.additions || 0,
-    deletions: p.deletions || 0,
+  return (ghJson(r.stdout) || []).map((p) => {
+    const login = (p.author && p.author.login) || '';
+    return {
+      number: p.number, title: p.title || '', author: login,
+      avatar: login ? 'https://github.com/' + encodeURIComponent(login) + '.png?size=36' : '',
+      draft: !!p.isDraft, branch: p.headRefName || '',
+      review: p.reviewDecision || null, checks: rollupFromContexts(p.statusCheckRollup),
+      url: p.url || '', updatedAt: p.updatedAt || '',
+      additions: p.additions || 0, deletions: p.deletions || 0,
+    };
+  });
+}
+
+// ── Azure DevOps: PAT + REST 7.1 ─────────────────────────────────────────────
+function adoBase(e) {
+  return 'https://dev.azure.com/' + encodeURIComponent(e.org) + '/' + encodeURIComponent(e.project);
+}
+
+async function adoApi(url) {
+  const res = await fetch(url, {
+    headers: {
+      Authorization: 'Basic ' + Buffer.from(':' + ADO_PAT).toString('base64'),
+      Accept: 'application/json',
+      'User-Agent': 'workspacer-shiplight',
+    },
+  });
+  if (res.status === 401 || res.status === 403) throw new Error('Azure DevOps auth failed (' + res.status + ') — check the ADO PAT');
+  if (!res.ok) throw new Error('Azure DevOps ' + res.status);
+  return res.json();
+}
+
+const adoRepoIds = new Map(); // slug -> repository id
+async function adoRepoId(e) {
+  const slug = entrySlug(e);
+  if (adoRepoIds.has(slug)) return adoRepoIds.get(slug);
+  const data = await adoApi(adoBase(e) + '/_apis/git/repositories/' + encodeURIComponent(e.repo) + '?api-version=7.1');
+  if (!data.id) throw new Error('Azure DevOps repo not found: ' + slug);
+  adoRepoIds.set(slug, data.id);
+  return data.id;
+}
+
+async function fetchRunsAdo(e) {
+  const id = await adoRepoId(e);
+  const data = await adoApi(adoBase(e) + '/_apis/build/builds?repositoryId=' + id
+    + '&repositoryType=TfsGit&$top=20&api-version=7.1');
+  return (data.value || []).map((b) => ({
+    id: b.id,
+    workflow: (b.definition && b.definition.name) || 'Pipeline',
+    title: (b.triggerInfo && b.triggerInfo['ci.message']) || b.buildNumber || '',
+    status: b.status === 'completed' ? 'completed' : 'in_progress',
+    conclusion: b.status === 'completed' ? adoBuildConclusion(b.result) : null,
+    branch: stripRef(b.sourceBranch),
+    event: b.reason || '',
+    url: (b._links && b._links.web && b._links.web.href) || '',
+    startedAt: b.startTime || b.queueTime || '',
+    updatedAt: b.finishTime || b.startTime || b.queueTime || '',
   }));
 }
 
-async function prMerged(slug, number) {
+async function fetchPrsAdo(e, runs) {
+  const id = await adoRepoId(e);
+  const data = await adoApi(adoBase(e) + '/_apis/git/repositories/' + id
+    + '/pullrequests?searchCriteria.status=active&$top=30&api-version=7.1');
+  return (data.value || []).map((p) => {
+    const branch = stripRef(p.sourceRefName);
+    return {
+      number: p.pullRequestId,
+      title: p.title || '',
+      author: (p.createdBy && (p.createdBy.displayName || p.createdBy.uniqueName)) || '',
+      avatar: '', // ADO avatar URLs need session auth; the pane renders initials
+      draft: !!p.isDraft,
+      branch,
+      review: adoVotesToReview(p.reviewers),
+      checks: adoChecksFromRuns(runs, branch),
+      url: entryUrl(e) + '/pullrequest/' + p.pullRequestId,
+      updatedAt: p.creationDate || '',
+      additions: null, // not in the PR list call; the pane hides the diffstat
+      deletions: null,
+    };
+  });
+}
+
+// ── Merged detection (for the 🎉 notification) ───────────────────────────────
+async function prMerged(entry, number) {
   try {
+    if (entry.kind === 'ado') {
+      const id = await adoRepoId(entry);
+      const p = await adoApi(adoBase(entry) + '/_apis/git/repositories/' + id
+        + '/pullrequests/' + number + '?api-version=7.1');
+      return p.status === 'completed';
+    }
     if (PAT) {
-      const p = await apiFetch('https://api.github.com/repos/' + slug + '/pulls/' + number);
+      const p = await ghApi('https://api.github.com/repos/' + entry.slug + '/pulls/' + number);
       return !!p.merged;
     }
-    const r = await run('gh', ['pr', 'view', String(number), '--repo', slug, '--json', 'state']);
+    const r = await run('gh', ['pr', 'view', String(number), '--repo', entry.slug, '--json', 'state']);
     const j = r.ok ? ghJson(r.stdout) : null;
     return !!j && j.state === 'MERGED';
   } catch { return false; }
 }
 
 // ── Poll + diff + notify ─────────────────────────────────────────────────────
-// state.repos: slug -> { slug, prs, runs, fetchedAt, error }
-const state = { repos: new Map(), mode: PAT ? 'pat' : 'gh' };
-const runBaseline = new Map(); // `${slug}#${runId}` -> last status ('active'|'done')
+const state = { repos: new Map() }; // slug -> { slug, kind, url, prs, runs, fetchedAt, error }
+const runBaseline = new Map(); // `${slug}#${runId}` -> 'active' | 'done'
 const prBaseline = new Map(); // `${slug}#${n}` -> { review }
-const baselined = new Set(); // slugs that completed a first successful poll
-const notified = new Set(); // one-shot notification keys
+const baselined = new Set();
+const notified = new Set();
 
 async function notify(title, body) {
   try { await wks.call('notifications.post', { title, body }); }
@@ -290,7 +423,7 @@ function diffRuns(slug, runs) {
     const prev = runBaseline.get(key);
     const now = r.status === 'completed' ? 'done' : 'active';
     runBaseline.set(key, now);
-    if (!baselined.has(slug)) continue; // first poll: seed silently
+    if (!baselined.has(slug)) continue;
     if (now === 'done' && prev === 'active' && NOTIFY_RUNS) {
       const ok = r.conclusion === 'success';
       once('run:' + key, () =>
@@ -302,18 +435,18 @@ function diffRuns(slug, runs) {
   }
 }
 
-function diffPrs(slug, prs) {
+function diffPrs(entry, prs) {
+  const slug = entrySlug(entry);
   const seen = new Set();
   for (const p of prs) {
     const key = slug + '#' + p.number;
     seen.add(key);
     const prev = prBaseline.get(key);
     prBaseline.set(key, { review: p.review });
-    if (!baselined.has(slug)) continue;
-    if (!NOTIFY_PRS) continue;
+    if (!baselined.has(slug) || !NOTIFY_PRS) continue;
     if (!prev) {
       once('open:' + key, () =>
-        notify('PR #' + p.number + ' opened', p.title + ' — ' + (p.author ? '@' + p.author + ' · ' : '') + slug));
+        notify('PR #' + p.number + ' opened', p.title + ' — ' + (p.author ? p.author + ' · ' : '') + slug));
       continue;
     }
     if (p.review !== prev.review) {
@@ -326,16 +459,29 @@ function diffPrs(slug, prs) {
       }
     }
   }
-  // A previously-open PR that vanished: merged (celebrate) or closed (silent).
   for (const key of Array.from(prBaseline.keys())) {
     if (!key.startsWith(slug + '#') || seen.has(key)) continue;
     prBaseline.delete(key);
     if (!baselined.has(slug) || !NOTIFY_PRS) continue;
     const number = Number(key.slice(slug.length + 1));
-    prMerged(slug, number).then((merged) => {
+    prMerged(entry, number).then((merged) => {
       if (merged) once('merge:' + key, () => notify('🎉 PR #' + number + ' merged', slug));
     }).catch(() => {});
   }
+}
+
+async function fetchEntry(entry) {
+  if (entry.kind === 'ado') {
+    if (!ADO_PAT) throw new Error('No Azure DevOps access: set the ADO PAT in settings.');
+    const runs = await fetchRunsAdo(entry);
+    const prs = await fetchPrsAdo(entry, runs);
+    return { runs, prs };
+  }
+  if (!PAT && !(await ensureGh())) {
+    throw new Error('No GitHub access: set a PAT in settings or authenticate the gh CLI.');
+  }
+  const [runs, prs] = await Promise.all([fetchRunsGithub(entry), fetchPrsGithub(entry)]);
+  return { runs, prs };
 }
 
 let polling = false;
@@ -343,37 +489,27 @@ async function poll() {
   if (polling) return;
   polling = true;
   try {
-    const slugs = watchedRepos();
+    const entries = watched();
+    const slugs = entries.map(entrySlug);
     for (const slug of Array.from(state.repos.keys())) {
       if (!slugs.includes(slug)) state.repos.delete(slug);
     }
-    if (!slugs.length) return;
-    if (!PAT && !(await ensureGh())) {
-      for (const slug of slugs) {
-        state.repos.set(slug, {
-          slug, prs: [], runs: [], fetchedAt: 0,
-          error: 'No GitHub access: set a PAT in settings or authenticate the gh CLI.',
-        });
-      }
-      return;
-    }
-    await Promise.all(slugs.map(async (slug) => {
-      const entry = state.repos.get(slug) || { slug, prs: [], runs: [], fetchedAt: 0, error: null };
-      state.repos.set(slug, entry);
+    await Promise.all(entries.map(async (entry) => {
+      const slug = entrySlug(entry);
+      const cur = state.repos.get(slug)
+        || { slug, kind: entry.kind, url: entryUrl(entry), prs: [], runs: [], fetchedAt: 0, error: null };
+      state.repos.set(slug, cur);
       try {
-        const [runs, prs] = await Promise.all([
-          PAT ? fetchRunsPat(slug) : fetchRunsGh(slug),
-          PAT ? fetchPrsPat(slug) : fetchPrsGh(slug),
-        ]);
+        const { runs, prs } = await fetchEntry(entry);
         diffRuns(slug, runs);
-        diffPrs(slug, prs);
+        diffPrs(entry, prs);
         baselined.add(slug);
-        entry.runs = runs;
-        entry.prs = prs;
-        entry.fetchedAt = Date.now();
-        entry.error = null;
+        cur.runs = runs;
+        cur.prs = prs;
+        cur.fetchedAt = Date.now();
+        cur.error = null;
       } catch (e) {
-        entry.error = e.message;
+        cur.error = e.message;
         log(slug + ': ' + e.message);
       }
     }));
@@ -388,9 +524,8 @@ poll().catch((e) => log('poll error: ' + e.message));
 // ── HTTP: pane UI + state ────────────────────────────────────────────────────
 function stateJson() {
   return JSON.stringify({
-    mode: state.mode,
     pollSeconds: POLL_SECONDS,
-    explicit: EXPLICIT_REPOS.length > 0,
+    explicit: EXPLICIT.length > 0,
     repos: Array.from(state.repos.values()),
   });
 }

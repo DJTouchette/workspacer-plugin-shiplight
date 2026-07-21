@@ -147,6 +147,13 @@
     width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0;
     background: var(--wks-bg-raised, #222);
   }
+  .initials {
+    width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0;
+    display: grid; place-items: center;
+    font-size: 0.5rem; font-weight: 700; letter-spacing: 0.02em;
+    background: color-mix(in srgb, var(--wks-accent, #7aa2f7) 22%, transparent);
+    color: var(--wks-accent, #7aa2f7);
+  }
   .diffstat { font-family: var(--wks-font-mono, monospace); font-size: 0.6rem; flex-shrink: 0; }
   .diffstat .add { color: var(--wks-success, #3fb950); }
   .diffstat .del { color: var(--wks-error, #f26d6d); }
@@ -287,17 +294,31 @@
       + '</a>';
   }
 
+  function initials(name) {
+    const parts = String(name).trim().split(/\s+/).slice(0, 2);
+    return parts.map((w) => w[0] || '').join('').toUpperCase() || '?';
+  }
+
+  function prAvatar(p) {
+    if (p.avatar) return '<img class="avatar" src="' + esc(p.avatar) + '" alt="" loading="lazy" />';
+    if (p.author) return '<span class="initials" title="' + esc(p.author) + '">' + esc(initials(p.author)) + '</span>';
+    return '';
+  }
+
   function prRow(p) {
+    // additions === null means the source doesn't report a diffstat (ADO).
+    const diff = p.additions == null ? ''
+      : '<span class="diffstat"><span class="add">+' + (p.additions || 0) + '</span> <span class="del">−' + (p.deletions || 0) + '</span></span>';
     return '<a class="row' + (p.draft ? ' draft' : '') + '" href="' + esc(p.url) + '" target="_blank" rel="noreferrer">'
       + (p.checks ? '<span class="ckdot ' + p.checks + '" title="checks ' + p.checks + '"></span>' : '<span class="ckdot" style="background:var(--wks-border-subtle, #2a2a2a)"></span>')
-      + (p.author ? '<img class="avatar" src="https://github.com/' + encodeURIComponent(p.author) + '.png?size=36" alt="" loading="lazy" />' : '')
+      + prAvatar(p)
       + '<span class="main"><span class="name"><span class="dim">#' + p.number + '</span> ' + esc(p.title) + '</span>'
       + '<span class="meta">'
       + (p.draft ? '<span class="chip">draft</span>' : '')
       + reviewChip(p)
       + '<span class="chip mono">' + ICONS.branch + esc(p.branch) + '</span>'
       + '</span></span>'
-      + '<span class="diffstat"><span class="add">+' + (p.additions || 0) + '</span> <span class="del">−' + (p.deletions || 0) + '</span></span>'
+      + diff
       + '<span class="when">' + rel(p.updatedAt) + '</span>'
       + '</a>';
   }
@@ -318,7 +339,7 @@
     for (const rp of repos) {
       html += '<div class="repo">'
         + '<div class="repo-head">' + repoDot(rp)
-        + '<a class="slug" href="https://github.com/' + esc(rp.slug) + '" target="_blank" rel="noreferrer">' + esc(rp.slug) + '</a>'
+        + '<a class="slug" href="' + esc(rp.url || 'https://github.com/' + rp.slug) + '" target="_blank" rel="noreferrer">' + esc(rp.slug) + '</a>'
         + (rp.error ? '<span class="err" title="' + esc(rp.error) + '">' + esc(rp.error) + '</span>' : '')
         + '</div>';
 

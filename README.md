@@ -2,7 +2,7 @@
 
 Running pipelines and open PRs for your project, at a glance — with notifications when something needs you.
 
-A [workspacer](https://github.com/DJTouchette/workspacer) plugin. One glanceable lamp — green when everything is clear, amber and breathing while pipelines run, red when something needs eyes — over a designed board of your GitHub Actions runs and open pull requests.
+A [workspacer](https://github.com/DJTouchette/workspacer) plugin. One glanceable lamp — green when everything is clear, amber and breathing while pipelines run, red when something needs eyes — over a designed board of your pipeline runs and open pull requests. Speaks **GitHub** (Actions + PRs) and **Azure DevOps** (Pipelines + PRs).
 
 ## What it does
 
@@ -17,21 +17,24 @@ A [workspacer](https://github.com/DJTouchette/workspacer) plugin. One glanceable
 
 Install from workspacer: **command palette → "Install Plugin…" → `DJTouchette/workspacer-plugin-shiplight`**, then open the **Shiplight** pane.
 
-Auth, either of:
+Auth:
 
-- **gh CLI** (default): if [`gh`](https://cli.github.com/) is on your PATH and authenticated (`gh auth login`), nothing to configure.
-- **PAT**: set *GitHub token* in the plugin's settings (a fine-grained PAT with read access to the repos). The token is stored in the plugin's local `.settings.json` — prefer the gh CLI if you'd rather not persist a token.
+- **GitHub — gh CLI** (default): if [`gh`](https://cli.github.com/) is on your PATH and authenticated (`gh auth login`), nothing to configure.
+- **GitHub — PAT**: set *GitHub token* in the plugin's settings (a fine-grained PAT with read access to the repos).
+- **Azure DevOps — PAT**: set *Azure DevOps token* (scopes: Code read + Build read). Required for ADO repos — there is no CLI fallback.
+
+Tokens are stored in the plugin's local `.settings.json` — for GitHub, prefer the gh CLI if you'd rather not persist one.
 
 Repos, either of:
 
-- **Explicit**: set *Repos* to `owner/name` (comma-separated for several).
-- **Inferred** (default): Shiplight watches the projects your agents actually touch — it resolves each active agent cwd's `origin` remote and follows the 3 most recent.
+- **Explicit**: set *Repos* comma-separated — `owner/name` for GitHub, `org/project/repo` for Azure DevOps.
+- **Inferred** (default): Shiplight watches the projects your agents actually touch — it resolves each active agent cwd's `origin` remote (github.com, dev.azure.com, and legacy visualstudio.com forms all recognized) and follows the 3 most recent. Assign a project to a directory by just having its remote point there.
 
 Settings also cover the poll interval and independent toggles for pipeline / PR notifications.
 
 ## How it works
 
-A zero-dependency sidecar (Node ≥ 22 built-ins only) polls GitHub every `pollSeconds` — `gh run list` + `gh pr list`, or REST + GraphQL when a PAT is set — normalizes both sources into one shape, diffs against the previous poll to fire `notifications.post` on transitions, and serves the pane UI from its own port. The pane just polls the sidecar's `/state`; it never talks to GitHub itself.
+A zero-dependency sidecar (Node ≥ 22 built-ins only) polls every `pollSeconds` — GitHub via `gh run list` + `gh pr list` (or REST + GraphQL with a PAT), Azure DevOps via REST 7.1 (`build/builds` + `git/pullrequests`, reviewer votes mapped to review states, the branch's latest build standing in for a PR checks rollup) — normalizes every source into one shape, diffs against the previous poll to fire `notifications.post` on transitions, and serves the pane UI from its own port. The pane just polls the sidecar's `/state`; it never talks to GitHub or ADO itself. Run `node test.js` for the pure-helper tests (remote parsing, vote mapping, rollups).
 
 Bus surface (see `plugin.json`): consumes `agent.state_changed` (only to learn project cwds for repo inference), calls `notifications.post`. Nothing else.
 

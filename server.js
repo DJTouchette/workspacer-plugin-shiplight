@@ -226,6 +226,15 @@ function watched() {
   return base;
 }
 
+// Ad-hoc poll (inference found a repo, a pane pinned one, the UI asked): run
+// now and re-arm the adaptive timer so a discovered active run tightens the
+// cadence immediately.
+function pollNow() {
+  poll()
+    .catch((e) => log('poll error: ' + e.message))
+    .finally(() => { if (typeof schedulePoll === 'function') schedulePoll(); });
+}
+
 wks.on('agent.state_changed', (data) => {
   const cwd = data && data.cwd;
   if (!cwd || EXPLICIT.length) return;
@@ -236,7 +245,7 @@ wks.on('agent.state_changed', (data) => {
       touchInferred(entry);
       if (fresh) {
         log('watching ' + entrySlug(entry) + ' (inferred from ' + cwd + ')');
-        poll().catch((e) => log('poll error: ' + e.message));
+        pollNow();
       }
     })
     .catch(() => {});
@@ -368,8 +377,12 @@ async function adoRepoId(e) {
 
 async function fetchRunsAdo(e) {
   const id = await adoRepoId(e);
+  // queueTimeDescending, NOT the API's default finishTimeDescending — that
+  // default sorts by completion, so queued/in-progress builds (no finish
+  // time) fall behind every finished build and never make the $top window:
+  // the board showed history but "didn't react" to running pipelines.
   const data = await adoApi(adoBase(e) + '/_apis/build/builds?repositoryId=' + id
-    + '&repositoryType=TfsGit&$top=20&api-version=7.1');
+    + '&repositoryType=TfsGit&$top=20&queryOrder=queueTimeDescending&api-version=7.1');
   return (data.value || []).map((b) => ({
     id: b.id,
     workflow: (b.definition && b.definition.name) || 'Pipeline',
@@ -545,8 +558,30 @@ async function poll() {
   }
 }
 
-setInterval(() => { poll().catch((e) => log('poll error: ' + e.message)); }, POLL_SECONDS * 1000);
-poll().catch((e) => log('poll error: ' + e.message));
+// Adaptive cadence: while any watched repo has a queued/running pipeline,
+// poll every 10s (capped by the configured interval) so the board tracks live
+// runs; otherwise the configured pollSeconds applies. The pane refetches
+// /state every 5s regardless, so a faster poll is immediately visible.
+function hasActiveRuns() {
+  for (const r of state.repos.values()) {
+    if ((r.runs || []).some((x) => x.status !== 'completed')) return true;
+  }
+  return false;
+}
+
+let pollTimer = null;
+function schedulePoll() {
+  if (pollTimer) clearTimeout(pollTimer);
+  const secs = hasActiveRuns() ? Math.min(10, POLL_SECONDS) : POLL_SECONDS;
+  pollTimer = setTimeout(() => {
+    poll()
+      .catch((e) => log('poll error: ' + e.message))
+      .finally(schedulePoll);
+  }, secs * 1000);
+}
+poll()
+  .catch((e) => log('poll error: ' + e.message))
+  .finally(schedulePoll);
 // Probe gh once at boot even before any repo is watched, so the pane's
 // first-run card can say up front whether GitHub access exists.
 if (!PAT) ensureGh().catch(() => {});
@@ -562,7 +597,7 @@ async function focusSlugFor(cwd) {
   if (!entry) return null;
   if (!pinned.has(cwd)) {
     pinned.set(cwd, entry);
-    poll().catch((e) => log('poll error: ' + e.message));
+    pollNow();
   }
   return entrySlug(entry);
 }
@@ -601,7 +636,7 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (url === '/refresh' && req.method === 'POST') {
-    poll().catch(() => {});
+    pollNow();
     res.writeHead(202);
     return res.end('ok');
   }

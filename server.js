@@ -446,9 +446,25 @@ const prBaseline = new Map(); // `${slug}#${n}` -> { review }
 const baselined = new Set();
 const notified = new Set();
 
-async function notify(title, body) {
-  try { await wks.call('notifications.post', { title, body }); }
+const NOTIFY_SOURCE = 'plugin:' + manifest.id;
+const PANE_TYPE = (manifest.panes && manifest.panes[0] && manifest.panes[0].type) || manifest.id;
+
+// Post into the in-app notification center (and, per user prefs, an OS toast).
+// `key` makes a repeated condition REPLACE its previous entry — one slot per
+// pipeline / per PR — instead of stacking. Click target: the run/PR `url` when
+// there is one, else the Shiplight pane.
+async function notify(payload) {
+  const p = Object.assign({ level: 'info', source: NOTIFY_SOURCE }, payload);
+  if (p.url) delete p.paneType;
+  else { delete p.url; p.paneType = PANE_TYPE; }
+  try { await wks.call('notifications.post', p); }
   catch (e) { log('notifications.post failed: ' + e.message); }
+}
+
+function prUrl(entry, number) {
+  return entry.kind === 'ado'
+    ? entryUrl(entry) + '/pullrequest/' + number
+    : entryUrl(entry) + '/pull/' + number;
 }
 
 function once(key, fn) {
@@ -467,10 +483,14 @@ function diffRuns(slug, runs) {
     if (now === 'done' && prev === 'active' && NOTIFY_RUNS) {
       const ok = r.conclusion === 'success';
       once('run:' + key, () =>
-        notify(
-          ok ? '✅ Pipeline passed' : '❌ Pipeline ' + (r.conclusion || 'failed'),
-          (r.workflow || 'CI') + ' · ' + (r.branch || '?') + ' — ' + slug,
-        ));
+        notify({
+          title: ok ? 'Pipeline passed' : 'Pipeline ' + (r.conclusion || 'failed'),
+          body: (r.workflow || 'CI') + ' · ' + (r.branch || '?') + ' — ' + slug,
+          level: ok ? 'success' : 'error',
+          url: r.url || undefined,
+          // One slot per pipeline+branch: a re-run's verdict replaces the old one.
+          key: 'run:' + slug + ':' + (r.workflow || 'ci') + ':' + (r.branch || ''),
+        }));
     }
   }
 }
@@ -484,18 +504,33 @@ function diffPrs(entry, prs) {
     const prev = prBaseline.get(key);
     prBaseline.set(key, { review: p.review });
     if (!baselined.has(slug) || !NOTIFY_PRS) continue;
+    // One notification slot per PR ('pr:<slug>#<n>'): opened → approved →
+    // changes-requested → merged each replace the previous entry for that PR.
+    const slot = 'pr:' + key;
     if (!prev) {
       once('open:' + key, () =>
-        notify('PR #' + p.number + ' opened', p.title + ' — ' + (p.author ? p.author + ' · ' : '') + slug));
+        notify({
+          title: 'PR #' + p.number + ' opened',
+          body: p.title + ' — ' + (p.author ? p.author + ' · ' : '') + slug,
+          level: 'info', url: p.url || undefined, key: slot,
+        }));
       continue;
     }
     if (p.review !== prev.review) {
       if (p.review === 'APPROVED') {
         once('appr:' + key + ':' + p.updatedAt, () =>
-          notify('✅ PR #' + p.number + ' approved', p.title + ' — ' + slug));
+          notify({
+            title: 'PR #' + p.number + ' approved',
+            body: p.title + ' — ' + slug,
+            level: 'success', url: p.url || undefined, key: slot,
+          }));
       } else if (p.review === 'CHANGES_REQUESTED') {
         once('chreq:' + key + ':' + p.updatedAt, () =>
-          notify('✳️ Changes requested on #' + p.number, p.title + ' — ' + slug));
+          notify({
+            title: 'Changes requested on #' + p.number,
+            body: p.title + ' — ' + slug,
+            level: 'warn', url: p.url || undefined, key: slot,
+          }));
       }
     }
   }
@@ -505,7 +540,12 @@ function diffPrs(entry, prs) {
     if (!baselined.has(slug) || !NOTIFY_PRS) continue;
     const number = Number(key.slice(slug.length + 1));
     prMerged(entry, number).then((merged) => {
-      if (merged) once('merge:' + key, () => notify('🎉 PR #' + number + ' merged', slug));
+      if (merged) once('merge:' + key, () =>
+        notify({
+          title: 'PR #' + number + ' merged',
+          body: slug,
+          level: 'success', url: prUrl(entry, number), key: 'pr:' + key,
+        }));
     }).catch(() => {});
   }
 }

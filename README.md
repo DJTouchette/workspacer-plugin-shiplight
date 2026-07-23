@@ -10,8 +10,14 @@ A [workspacer](https://github.com/DJTouchette/workspacer) plugin. One glanceable
 - **Pipelines.** Everything currently running (live spinner + elapsed time), plus the standing verdict of the latest completed run per workflow.
 - **Pull requests.** Author, review state (approved / changes requested / review required), checks rollup, branch, ±diffstat, freshness — drafts dimmed.
 - **Notifications** on *transitions only* (never on state that was already true when it started watching):
-  - a pipeline concludes → ✅ / ❌ with workflow + branch
-  - a PR is opened, approved, gets changes requested, or is merged 🎉
+  - a pipeline concludes → success/error notification with workflow + branch
+  - a PR is opened (info), approved (success), gets changes requested (warn), or is merged (success)
+
+  Notifications land in workspacer's in-app notification center (bell + toast) and, per your
+  notification preferences, as a clickable OS notification. Clicking opens the run/PR in your
+  browser (or the Shiplight pane when no link applies). Each pipeline+branch and each PR gets
+  **one notification slot**: a re-run's verdict, or a PR's next state, *replaces* the previous
+  entry instead of stacking.
 
 ## Setup
 
@@ -34,7 +40,7 @@ Settings also cover the poll interval and independent toggles for pipeline / PR 
 
 ## How it works
 
-A zero-dependency sidecar (Node ≥ 22 built-ins only) polls every `pollSeconds` — GitHub via `gh run list` + `gh pr list` (or REST + GraphQL with a PAT), Azure DevOps via REST 7.1 (`build/builds` + `git/pullrequests`, reviewer votes mapped to review states, the branch's latest build standing in for a PR checks rollup) — normalizes every source into one shape, diffs against the previous poll to fire `notifications.post` on transitions, and serves the pane UI from its own port. The pane just polls the sidecar's `/state`; it never talks to GitHub or ADO itself. Run `node test.js` for the pure-helper tests (remote parsing, vote mapping, rollups).
+A zero-dependency sidecar (Node ≥ 22 built-ins only) polls every `pollSeconds` — GitHub via `gh run list` + `gh pr list` (or REST + GraphQL with a PAT), Azure DevOps via REST 7.1 (`build/builds` + `git/pullrequests`, reviewer votes mapped to review states, the branch's latest build standing in for a PR checks rollup) — normalizes every source into one shape, diffs against the previous poll to fire `notifications.post` on transitions (level-tagged, keyed per pipeline/PR so repeats replace, linking to the run/PR), and serves the pane UI from its own port. The pane just polls the sidecar's `/state`; it never talks to GitHub or ADO itself. Run `node test.js` for the pure-helper tests (remote parsing, vote mapping, rollups).
 
 Bus surface (see `plugin.json`): consumes `agent.state_changed` (only to learn project cwds for repo inference), calls `notifications.post`. Nothing else.
 

@@ -29,7 +29,7 @@ Auth:
 - **GitHub — PAT**: set *GitHub token* in the plugin's settings (a fine-grained PAT with read access to the repos).
 - **Azure DevOps — PAT**: set *Azure DevOps token* (scopes: Code read + Build read). Required for ADO repos — there is no CLI fallback.
 
-Tokens are stored in the plugin's local `.settings.json` — for GitHub, prefer the gh CLI if you'd rather not persist one.
+Both token settings are declared `"secret": true` (v1.1.1): workspacer renders them as masked write-only inputs (set/replace/clear — never displayed), redacts them from every settings read, broadcast, and webview injection, and stores them in the plugin's local `.settings.json` (0600). The plaintext reaches only this sidecar via its `WKS_SETTINGS` env. For GitHub, prefer the gh CLI if you'd rather not persist a token at all.
 
 Repos, either of:
 

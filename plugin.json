@@ -2,10 +2,12 @@
   "id": "djtouchette.shiplight",
   "name": "Shiplight",
   "apiVersion": "1",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "server": {
     "command": "node",
-    "args": ["server.js"],
+    "args": [
+      "server.js"
+    ],
     "port": 9211,
     "health": "/health"
   },
@@ -13,7 +15,7 @@
     {
       "type": "djtouchette.shiplight",
       "title": "Shiplight",
-      "icon": "🚢",
+      "icon": "\ud83d\udea2",
       "scope": "both",
       "path": "/"
     }
@@ -31,14 +33,16 @@
       "label": "GitHub token (PAT)",
       "type": "string",
       "default": "",
-      "help": "Fine-grained PAT with repo read access. Empty = use the gh CLI's auth."
+      "help": "Fine-grained PAT with repo read access. Empty = use the gh CLI's auth.",
+      "secret": true
     },
     {
       "key": "adoToken",
       "label": "Azure DevOps token (PAT)",
       "type": "string",
       "default": "",
-      "help": "ADO PAT with Code (read) + Build (read) scopes. Required for Azure DevOps repos."
+      "help": "ADO PAT with Code (read) + Build (read) scopes. Required for Azure DevOps repos.",
+      "secret": true
     },
     {
       "key": "pollSeconds",
@@ -62,6 +66,10 @@
       "help": "OS notification on PR opened / approved / changes requested / merged."
     }
   ],
-  "capabilities": ["notifications.post"],
-  "consumes": ["agent.state_changed"]
+  "capabilities": [
+    "notifications.post"
+  ],
+  "consumes": [
+    "agent.state_changed"
+  ]
 }

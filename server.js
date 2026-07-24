@@ -4,8 +4,9 @@
 // Sidecar: polls GitHub and/or Azure DevOps for the watched repos (explicit
 // setting, or inferred from the projects your agents touch), serves the pane
 // UI from ./ui, and posts OS notifications on state *transitions* (a pipeline
-// concluding, a PR getting approved / changes-requested / opened / merged) —
-// never on states that were already true when it started watching.
+// being triggered or concluding, a PR getting approved / changes-requested /
+// opened / merged) — never on states that were already true when it started
+// watching.
 //
 // Sources:
 //   GitHub       — a PAT (settings.token → REST + GraphQL) or the gh CLI.
@@ -130,6 +131,17 @@ function adoBuildConclusion(result) {
   return 'failure'; // failed | partiallySucceeded — both need eyes
 }
 
+// Notification-worthy transition for a run, given its previous baseline state
+// (undefined = never seen) and its current one. 'started' = a new run showed
+// up still active; 'concluded' = it reached done since the last poll —
+// including runs that started AND finished inside one poll interval, which
+// would otherwise never notify at all.
+function runTransition(prev, now) {
+  if (now === 'active' && prev === undefined) return 'started';
+  if (now === 'done' && prev !== 'done') return 'concluded';
+  return null;
+}
+
 // Latest build on a PR's source branch stands in for its checks rollup
 // (Azure DevOps has no cheap per-PR rollup in the PR list call).
 function adoChecksFromRuns(runs, branch) {
@@ -144,6 +156,7 @@ function adoChecksFromRuns(runs, branch) {
 module.exports = {
   parseWatchEntry, parseRemote, stripRef, entrySlug, entryUrl,
   rollupFromContexts, rollupFromState, adoVotesToReview, adoBuildConclusion, adoChecksFromRuns,
+  runTransition,
 };
 if (require.main !== module) return;
 
@@ -173,6 +186,7 @@ const EXPLICIT = String(settings.repo || '')
 const PAT = String(settings.token || '').trim();
 const ADO_PAT = String(settings.adoToken || process.env.AZURE_DEVOPS_EXT_PAT || '').trim();
 const NOTIFY_RUNS = settings.notifyRuns !== false;
+const NOTIFY_RUN_STARTS = settings.notifyRunStarts !== false;
 const NOTIFY_PRS = settings.notifyPrs !== false;
 const MAX_INFERRED = 3;
 
@@ -480,7 +494,20 @@ function diffRuns(slug, runs) {
     const now = r.status === 'completed' ? 'done' : 'active';
     runBaseline.set(key, now);
     if (!baselined.has(slug)) continue;
-    if (now === 'done' && prev === 'active' && NOTIFY_RUNS) {
+    const t = runTransition(prev, now);
+    // One slot per pipeline+branch: the verdict replaces the start entry, a
+    // re-run replaces the previous run's entries.
+    const slot = 'run:' + slug + ':' + (r.workflow || 'ci') + ':' + (r.branch || '');
+    if (t === 'started' && NOTIFY_RUN_STARTS) {
+      once('start:' + key, () =>
+        notify({
+          title: 'Pipeline started',
+          body: (r.workflow || 'CI') + ' · ' + (r.branch || '?') + ' — ' + slug,
+          level: 'info',
+          url: r.url || undefined,
+          key: slot,
+        }));
+    } else if (t === 'concluded' && NOTIFY_RUNS) {
       const ok = r.conclusion === 'success';
       once('run:' + key, () =>
         notify({
@@ -488,8 +515,7 @@ function diffRuns(slug, runs) {
           body: (r.workflow || 'CI') + ' · ' + (r.branch || '?') + ' — ' + slug,
           level: ok ? 'success' : 'error',
           url: r.url || undefined,
-          // One slot per pipeline+branch: a re-run's verdict replaces the old one.
-          key: 'run:' + slug + ':' + (r.workflow || 'ci') + ':' + (r.branch || ''),
+          key: slot,
         }));
     }
   }

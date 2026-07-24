@@ -2,7 +2,7 @@
   "id": "djtouchette.shiplight",
   "name": "Shiplight",
   "apiVersion": "1",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "server": {
     "command": "node",
     "args": [
@@ -57,6 +57,13 @@
       "type": "boolean",
       "default": true,
       "help": "OS notification when a watched pipeline concludes."
+    },
+    {
+      "key": "notifyRunStarts",
+      "label": "Notify on pipeline starts",
+      "type": "boolean",
+      "default": true,
+      "help": "OS notification when a watched pipeline is triggered."
     },
     {
       "key": "notifyPrs",

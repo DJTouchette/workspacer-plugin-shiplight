@@ -5,6 +5,7 @@ const assert = require('assert');
 const {
   parseWatchEntry, parseRemote, stripRef, entrySlug, entryUrl,
   rollupFromState, adoVotesToReview, adoBuildConclusion, adoChecksFromRuns,
+  runTransition,
 } = require('./server.js');
 
 // parseWatchEntry: 2 segments GitHub, 3 segments Azure DevOps.
@@ -72,5 +73,14 @@ const runs = [
 assert.strictEqual(adoChecksFromRuns(runs, 'feat'), 'failing'); // newest wins
 assert.strictEqual(adoChecksFromRuns(runs, 'main'), 'pending');
 assert.strictEqual(adoChecksFromRuns(runs, 'nope'), null);
+
+// Run transitions: new-active notifies a start, reaching done notifies the
+// verdict — including a run that started and finished within one poll — and
+// steady states stay quiet.
+assert.strictEqual(runTransition(undefined, 'active'), 'started');
+assert.strictEqual(runTransition('active', 'done'), 'concluded');
+assert.strictEqual(runTransition(undefined, 'done'), 'concluded');
+assert.strictEqual(runTransition('active', 'active'), null);
+assert.strictEqual(runTransition('done', 'done'), null);
 
 console.log('shiplight: all tests passed');

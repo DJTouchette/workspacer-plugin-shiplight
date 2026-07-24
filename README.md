@@ -10,14 +10,16 @@ A [workspacer](https://github.com/DJTouchette/workspacer) plugin. One glanceable
 - **Pipelines.** Everything currently running (live spinner + elapsed time), plus the standing verdict of the latest completed run per workflow.
 - **Pull requests.** Author, review state (approved / changes requested / review required), checks rollup, branch, ±diffstat, freshness — drafts dimmed.
 - **Notifications** on *transitions only* (never on state that was already true when it started watching):
+  - a pipeline is triggered → info notification with workflow + branch
   - a pipeline concludes → success/error notification with workflow + branch
+    (a run that starts *and* finishes between polls still gets its verdict)
   - a PR is opened (info), approved (success), gets changes requested (warn), or is merged (success)
 
   Notifications land in workspacer's in-app notification center (bell + toast) and, per your
   notification preferences, as a clickable OS notification. Clicking opens the run/PR in your
   browser (or the Shiplight pane when no link applies). Each pipeline+branch and each PR gets
-  **one notification slot**: a re-run's verdict, or a PR's next state, *replaces* the previous
-  entry instead of stacking.
+  **one notification slot**: a pipeline's verdict replaces its "started" entry, a re-run or a
+  PR's next state *replaces* the previous entry instead of stacking.
 
 ## Setup
 
@@ -36,7 +38,7 @@ Repos, either of:
 - **Explicit**: set *Repos* comma-separated — `owner/name` for GitHub, `org/project/repo` for Azure DevOps.
 - **Inferred** (default): Shiplight watches the projects your agents actually touch — it resolves each active agent cwd's `origin` remote (github.com, dev.azure.com, and legacy visualstudio.com forms all recognized) and follows the 3 most recent. Assign a project to a directory by just having its remote point there.
 
-Settings also cover the poll interval and independent toggles for pipeline / PR notifications.
+Settings also cover the poll interval and independent toggles for pipeline start / pipeline verdict / PR notifications.
 
 ## How it works
 
